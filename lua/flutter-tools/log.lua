@@ -77,7 +77,7 @@ end
 local function append(buf, lines)
   vim.bo[buf].modifiable = true
   api.nvim_buf_set_lines(M.buf, -1, -1, true, lines)
-  vim.bo[buf].modifiable = false
+  -- vim.bo[buf].modifiable = false
 end
 
 --- Open a log showing the output from a command
@@ -95,7 +95,7 @@ end
 function M.__resurrect()
   local buf = api.nvim_get_current_buf()
   vim.cmd("setfiletype log")
-  vim.bo[buf].modifiable = false
+  -- vim.bo[buf].modifiable = false
   vim.bo[buf].modified = false
   vim.bo[buf].buftype = "nofile"
 end
@@ -104,7 +104,7 @@ function M.clear()
   if api.nvim_buf_is_valid(M.buf) then
     vim.bo[M.buf].modifiable = true
     api.nvim_buf_set_lines(M.buf, 0, -1, false, {})
-    vim.bo[M.buf].modifiable = false
+    -- vim.bo[M.buf].modifiable = false
   end
 end
 

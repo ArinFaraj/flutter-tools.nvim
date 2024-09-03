@@ -9,6 +9,7 @@ local dev_tools = lazy.require("flutter-tools.dev_tools") ---@module   "flutter-
 local lsp = lazy.require("flutter-tools.lsp") ---@module "flutter-tools.lsp"
 local job_runner = lazy.require("flutter-tools.runners.job_runner") ---@module "flutter-tools.runners.job_runner"
 local debugger_runner = lazy.require("flutter-tools.runners.debugger_runner") ---@module "flutter-tools.runners.debugger_runner"
+local path = lazy.require("flutter-tools.utils.path") ---@module "flutter-tools.utils.path"
 local dev_log = lazy.require("flutter-tools.log") ---@module "flutter-tools.log"
 
 local M = {}
@@ -20,7 +21,7 @@ local current_device = nil
 
 ---@class flutter.Runner
 ---@field is_running fun(runner: flutter.Runner):boolean
----@field run fun(runner: flutter.Runner, paths:table, args:table, cwd:string, on_run_data:fun(is_err:boolean, data:string), on_run_exit:fun(data:string[], args: table))
+---@field run fun(runner: flutter.Runner, paths:table, args:table, cwd:string, on_run_data:fun(is_err:boolean, data:string), on_run_exit:fun(data:string[], args: table),  is_flutter_project: boolean, project_conf: flutter.ProjectConfig?)
 ---@field cleanup fun(funner: flutter.Runner)
 ---@field send fun(runner: flutter.Runner, cmd:string, quiet: boolean?)
 
@@ -28,13 +29,10 @@ local current_device = nil
 local runner = nil
 
 local function use_debugger_runner()
-  local dap_ok, dap = pcall(require, "dap")
-  if not config.debugger.run_via_dap then return false end
+  if not config.debugger.enabled then return false end
+  local dap_ok, _ = pcall(require, "dap")
   if dap_ok then return true end
-  ui.notify(
-    utils.join({ "debugger runner was request but nvim-dap is not installed!", dap }),
-    ui.ERROR
-  )
+  ui.notify("debugger runner was request but nvim-dap is not installed!", ui.ERROR)
   return false
 end
 
@@ -170,6 +168,45 @@ local function get_device_from_args(args)
   end
 end
 
+local function get_absolute_path(input_path)
+  -- Check if the provided path is an absolute path
+  if
+    vim.fn.isdirectory(input_path) == 1
+    and not input_path:match("^/")
+    and not input_path:match("^%a:[/\\]")
+  then
+    -- It's a relative path, so expand it to an absolute path
+    local absolute_path = vim.fn.fnamemodify(input_path, ":p")
+    return absolute_path
+  else
+    -- It's already an absolute path
+    return input_path
+  end
+end
+
+---@param project_conf flutter.ProjectConfig?
+local function get_cwd(project_conf)
+  if project_conf and project_conf.cwd then
+    local resolved_path = get_absolute_path(project_conf.cwd)
+    if not vim.loop.fs_stat(resolved_path) then
+      return ui.notify("Provided cwd does not exist: " .. resolved_path, ui.ERROR)
+    end
+    return resolved_path
+  end
+  return lsp.get_lsp_root_dir()
+end
+
+---@param cwd string
+local function has_flutter_dependency_in_pubspec(cwd)
+  local pubspec = vim.fn.glob(path.join(cwd, "pubspec.yaml"))
+  if pubspec == "" then return false end
+  local pubspec_content = vim.fn.readfile(pubspec)
+  local joined_content = table.concat(pubspec_content, "\n")
+
+  local flutter_dependency = string.match(joined_content, "flutter:\n[%s\t]*sdk:[%s\t]*flutter")
+  return flutter_dependency ~= nil
+end
+
 ---@param opts RunOpts
 ---@param project_conf flutter.ProjectConfig?
 local function run(opts, project_conf)
@@ -178,7 +215,6 @@ local function run(opts, project_conf)
     local args = opts.cli_args or get_run_args(opts, project_conf)
 
     current_device = opts.device or get_device_from_args(args)
-    ui.notify("Starting flutter project...")
     if project_conf then
       if project_conf.pre_run_callback then
         local callback_args = {
@@ -190,8 +226,17 @@ local function run(opts, project_conf)
         project_conf.pre_run_callback(callback_args)
       end
     end
+    local cwd = get_cwd(project_conf)
+    -- To determinate if the project is a flutter project we need to check if the pubspec.yaml
+    -- file has a flutter dependency in it. We need to get cwd first to pick correct pubspec.yaml file.
+    local is_flutter_project = has_flutter_dependency_in_pubspec(cwd)
+    if is_flutter_project then
+      ui.notify("Starting flutter project...")
+    else
+      ui.notify("Starting dart project...")
+    end
     runner = use_debugger_runner() and debugger_runner or job_runner
-    runner:run(paths, args, lsp.get_lsp_root_dir(), on_run_data, on_run_exit)
+    runner:run(paths, args, cwd, on_run_data, on_run_exit, is_flutter_project, project_conf)
   end)
 end
 
@@ -421,7 +466,6 @@ end
 
 ---@param args string[]
 ---@param project_conf flutter.ProjectConfig?
----@return string[]
 local function set_args_from_project_config(args, project_conf)
   local flavor = project_conf and project_conf.flavor
   local device = project_conf and project_conf.device

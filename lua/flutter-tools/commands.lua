@@ -11,6 +11,7 @@ local job_runner = lazy.require("flutter-tools.runners.job_runner") ---@module "
 local debugger_runner = lazy.require("flutter-tools.runners.debugger_runner") ---@module "flutter-tools.runners.debugger_runner"
 local path = lazy.require("flutter-tools.utils.path") ---@module "flutter-tools.utils.path"
 local dev_log = lazy.require("flutter-tools.log") ---@module "flutter-tools.log"
+local parser = lazy.require("flutter-tools.utils.yaml_parser")
 
 local M = {}
 
@@ -134,6 +135,7 @@ local function get_run_args(opts, conf)
   local flutter_mode = conf and conf.flutter_mode
   local web_port = conf and conf.web_port
   local dev_url = dev_tools.get_url()
+  local additional_args = conf and conf.additional_args
 
   if not use_debugger_runner() then vim.list_extend(args, { "run" }) end
   if not cmd_args and device then vim.list_extend(args, { "-d", device }) end
@@ -157,6 +159,7 @@ local function get_run_args(opts, conf)
     end -- else default to debug
   end
   if dev_url then vim.list_extend(args, { "--devtools-server-address", dev_url }) end
+  if additional_args then vim.list_extend(args, additional_args) end
   return args
 end
 
@@ -196,15 +199,43 @@ local function get_cwd(project_conf)
   return lsp.get_lsp_root_dir()
 end
 
+--@return table?
+local function parse_yaml(str)
+  local ok, yaml = pcall(parser.parse, str)
+  if not ok then return nil end
+  return yaml
+end
+
 ---@param cwd string
 local function has_flutter_dependency_in_pubspec(cwd)
-  local pubspec = vim.fn.glob(path.join(cwd, "pubspec.yaml"))
-  if pubspec == "" then return false end
-  local pubspec_content = vim.fn.readfile(pubspec)
+  -- As this plugin is tailored for flutter projects,
+  -- we assume that the project is a flutter project.
+  local default_has_flutter_dependency = true
+  local pubspec_path = vim.fn.glob(path.join(cwd, "pubspec.yaml"))
+  if pubspec_path == "" then return default_has_flutter_dependency end
+  local pubspec_content = vim.fn.readfile(pubspec_path)
   local joined_content = table.concat(pubspec_content, "\n")
-
-  local flutter_dependency = string.match(joined_content, "flutter:\n[%s\t]*sdk:[%s\t]*flutter")
-  return flutter_dependency ~= nil
+  local pubspec = parse_yaml(joined_content)
+  if not pubspec then return default_has_flutter_dependency end
+  --https://github.com/Dart-Code/Dart-Code/blob/43914cd2709d77668e19a4edf3500f996d5c307b/src/shared/utils/fs.ts#L183
+  return (
+    pubspec.dependencies
+    and (
+      pubspec.dependencies.flutter
+      or pubspec.dependencies.flutter_test
+      or pubspec.dependencies.sky_engine
+      or pubspec.dependencies.flutter_goldens
+    )
+  )
+    or (
+      pubspec.devDependencies
+      and (
+        pubspec.devDependencies.flutter
+        or pubspec.devDependencies.flutter_test
+        or pubspec.devDependencies.sky_engine
+        or pubspec.devDependencies.flutter_goldens
+      )
+    )
 end
 
 ---@param opts RunOpts
